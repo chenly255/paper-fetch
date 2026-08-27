@@ -11,6 +11,39 @@ description: >-
 
 # paper-fetch：论文 PDF 下载
 
+## 安装与验收（技能就位时先做）
+
+三档装法任选其一（要求 Python ≥ 3.11）：
+
+```bash
+# ① 零安装（uvx，不改环境；适合先试用）
+uvx --from git+https://github.com/chenly255/paper-fetch.git paper-fetch --help
+
+# ② pipx 安装（推荐正式使用；钉 tag，别跟 main HEAD）
+pipx install "paper-fetch @ git+https://github.com/chenly255/paper-fetch.git@v0.1.0"
+
+# ③ pip 安装（没有 pipx 时）
+pip install --user "paper-fetch @ git+https://github.com/chenly255/paper-fetch.git@v0.1.0"
+```
+
+- 权限报错（externally-managed）→ 换 pipx；404 → 仓库未公开/不可达，报告用户。
+- 无头浏览器兜底（可选）：装 `[browser]` extras 后跑一次 `playwright install chromium`。
+
+**技能落位**：把本文件（SKILL.md）所在目录内容放到
+`~/.claude/skills/paper-fetch/`（Claude Code）或 `~/.agents/skills/paper-fetch/`
+（Codex / ZCode），只认 SKILL.md 本体。
+
+**验收一句话**：`paper-fetch --help` 能打印用法，且下一篇 OA 论文拿到的文件以
+`%PDF` 开头，即装好：
+
+```bash
+paper-fetch --doi 10.1371/journal.pone.0300000 --out /tmp/pf-accept.pdf
+head -c 4 /tmp/pf-accept.pdf   # %PDF
+```
+
+**版本纪律**：安装命令钉已发布 tag（如上例 `@v0.1.0`），不要跟 main HEAD——
+下载链行为变更只应通过升级 tag 引入，便于回退定位。
+
 ## 什么时候用
 
 - 用户说「下载这篇论文 / 拿到全文 / 给我 PDF」，手里有 DOI、标题、论文页 URL 或 OA 链接任一。
@@ -61,7 +94,8 @@ result = await download_pdf(
 
 - `auth_required` 是确定性失败：换 DOI/标题重试无意义，让用户走机构通道或手动下载。
 - 网络瞬断可整链重试一次；连续两次失败就停，报告 `tried_sources` 给用户。
-- Sci-Hub 默认关闭；用户没明确要求别开（合规责任在部署方）。
+- Sci-Hub 段**不包含在本仓库**（合规敏感，需另行获取，默认关）；适配器缺席时该段
+  自动跳过，用户没明确要求别管它（合规责任在部署方）。
 
 ## 配置
 
