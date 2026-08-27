@@ -18,7 +18,8 @@
     预印本/免费源段被 429/403 挡下时同任务内自动换出口 IP 重试（多 IP 轮换，2026-08-23 定稿）。
   ⑦ library proxy：预印本也不可得时用机构账号兜底。**默认停用**（2026-08-23 定稿：
     library_proxy_enabled 默认 False + 无凭据即跳过，防慢通道空转；用户可在设置里手动开）。
-  ⑧ Sci-Hub：仅保留为默认关闭的部署开关
+  ⑧ Sci-Hub：可选插件段——适配器不随主仓分发（合规剥离，见 README「合规边界」），
+     开关（FetchConfig.scihub_enabled，默认关）+ 适配器在场双条件才生效
 
 返回 schema：
   {
@@ -41,8 +42,8 @@
 
 设计原则：
 - 每个 adapter 一个文件，纯函数签名，无状态共享（解耦）
-- Sci-Hub 作为最后一级兜底，默认关（FetchConfig.scihub_enabled），合法源全失败 + 个人/
-  课题组内部部署开启时才用（2026-06-29 复活，合规边界靠开关 + 入库拦截守）
+- Sci-Hub 段是可选插件：适配器已拆出主仓（2026-08-27 合规剥离），存在才挂、不存在
+  整段跳过——开关默认关，且没装适配器时开了也走空（见 extras.py 加载器）
 - 每段成功后立即 size 校验，超限丢弃返 size_limit_exceeded（T-08-08）
 - pdf_bytes 不进 LLM tool_result（由 paper_search_agent 转 cache，T-08-13）
 
@@ -83,7 +84,7 @@ from .preprint_discovery import (
 )
 from .publisher_direct_adapter import fetch_publisher_direct
 from .robust_fetch import FetchBudget, fetch_pdf, is_free_site
-from .scihub_adapter import fetch_via_scihub
+from .extras import load_optional_adapter
 from .unpaywall_adapter import fetch_via_unpaywall
 from .web_pdf_discovery_adapter import (
     can_discover_pdf_via_web,
@@ -96,6 +97,12 @@ from . import proxy as _proxy_mod
 from .proxy import async_client_for
 
 logger = logging.getLogger(__name__)
+
+# ⑧ Sci-Hub 可选插件入口（2026-08-27 合规剥离）：适配器不随主仓分发——部署方把它放回
+# src/paper_fetch/ 或设 PAPER_FETCH_EXTRA_ADAPTERS 指向私有附加仓，加载器才返回入口；
+# 否则为 None，该段即使开关开着也整段跳过。测试/宿主可直接对
+# paper_fetch.service.fetch_via_scihub 赋值（或 patch）注入替身。
+fetch_via_scihub = load_optional_adapter("scihub_adapter", "fetch_via_scihub")
 
 # 下载总时间软预算（秒）：付费/慢站把所有段串行跑满可能超 100s，而 agent loop 总超时 120s
 # 一到点会直接抛 TimeoutError 杀掉整个 loop、连 auth_required/landing_url 兜底信号都丢。
@@ -819,23 +826,30 @@ async def _download_pdf_chain(
                 )
         logger.debug("download_pdf: 机构链路后的 web_pdf_discovery 也未命中")
 
-    # ⑦ scihub：合法源全失败后的最后一级兜底（D-02 合规——默认关，个人/课题组内部部署才开）。
+    # ⑦ scihub：可选插件段（适配器不随主仓分发，默认关）。双条件生效：开关开 + 适配器在场；
+    # 开关开了但适配器缺席（未装/加载失败）时只打一行提示并跳过——不报错、不 tried、不空转。
     # 故意放在所有合法通道（含图书馆代理）之后、known_paywalled 短路之外——付费墙论文
-    # 正是它的用武之地，只需 DOI。config.scihub_enabled 为 False 时 adapter 内部直接返 None。
-    # ★不受 75s 软预算限制（2026-08-23 审计修复）：前面的 library_proxy 段为传大文件本来就
-    # 故意豁免预算（可跑十几分钟），走到这里时 deadline 必已耗尽——若查预算，开了
-    # sci_hub_enabled 也永远轮不到 scihub。scihub adapter 自带 SCI_HUB_TIMEOUT_SEC 单镜像
-    # 超时，不会无限拖。顺序上它仍是最后一段（合法源优先），只是不再被预算挡在门外。
+    # 正是它的用武之地，只需 DOI。
+    # ★不受 75s 软预算限制（2026-08-23 审计修复）：前面的 library_proxy 段为传大文件本来
+    # 就故意豁免预算（可跑十几分钟），走到这里时 deadline 必已耗尽——若查预算，开了
+    # 开关也永远轮不到 scihub。scihub adapter 自带单镜像超时（FetchConfig.scihub_timeout_sec），
+    # 不会无限拖。顺序上它仍是最后一段（合法源优先），只是不再被预算挡在门外。
     if cfg.scihub_enabled and doi_effective:
-        await _emit(on_stage, "scihub")
-        tried.append("scihub")
-        pdf = await fetch_via_scihub(doi_effective)
-        if pdf is not None:
-            return await _validate_and_return(
-                pdf, "scihub", tried, max_bytes, doi=doi_effective, title=title,
-                content_url=_doi_entry_url(doi_effective),
+        if fetch_via_scihub is None:
+            logger.info(
+                "download_pdf: scihub 开关已开但适配器未安装（不随主仓分发，装法见 README"
+                "「合规边界」节），跳过该段"
             )
-        logger.debug("download_pdf: scihub 兜底也失败")
+        else:
+            await _emit(on_stage, "scihub")
+            tried.append("scihub")
+            pdf = await fetch_via_scihub(doi_effective)
+            if pdf is not None:
+                return await _validate_and_return(
+                    pdf, "scihub", tried, max_bytes, doi=doi_effective, title=title,
+                    content_url=_doi_entry_url(doi_effective),
+                )
+            logger.debug("download_pdf: scihub 兜底也失败")
 
     logger.info(
         "download_pdf: 全部下载段失败，tried_sources=%s，auth_required=%s，proxy_reason=%s，"
