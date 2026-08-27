@@ -1,0 +1,11 @@
+{
+  "_comment": "学校图书馆认证代理（端口式 HTTP 正向代理，如 Squid/EZproxy）。要新增学校：在 schools 下加一条 {学校中文全名: {proxy, auth, note, aliases}}。proxy=host:port；auth 目前只支持 basic（HTTP Basic 代理认证）；aliases 是英文名/简称，便于匹配。学校名与 webvpn_schools.json / carsi.institutions 的命名对齐。改这个文件后端会自动生效（lru_cache 随重启刷新）。",
+  "schools": {
+    "复旦大学": {
+      "proxy": "libproxy.fudan.edu.cn:8080",
+      "auth": "basic",
+      "note": "复旦图书馆代理，校外访问，需图书馆账号（URP/一卡通号）",
+      "aliases": ["Fudan University", "fudan"]
+    }
+  }
+}

@@ -1,0 +1,44 @@
+[project]
+name = "paper-fetch"
+version = "0.1.0"
+description = "论文 PDF 下载链：合法来源优先、正式版优先回落预印本、身份核验防顶包（从 PaperPilot 迁出的独立可分发本体）"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Lily (chenly255)" }]
+dependencies = [
+  "httpx>=0.27",
+  "pymupdf>=1.24",
+  "beautifulsoup4>=4.12",
+  "curl-cffi>=0.15.0",
+]
+
+[project.optional-dependencies]
+# 无头浏览器兜底（过 Cloudflare/JS 挑战）：可选，装了自动生效，没装链路自动跳过该级
+browser = ["playwright>=1.60.0"]
+# 开发/测试
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+paper-fetch = "paper_fetch.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/paper_fetch"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "SKILL.md"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = [
+  "error:coroutine .* was never awaited::",
+  "error:(?s).*coroutine .* was never awaited:pytest.PytestUnraisableExceptionWarning:",
+]

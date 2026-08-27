@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# 密钥与环境（密钥零入库：号池文件、.env 一律本地放，不入仓库）
+.env
+*key*
+*tavily_keys*
+
+# 测试缓存
+.pytest_cache/
