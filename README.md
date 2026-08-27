@@ -130,7 +130,7 @@ python -m paper_fetch --doi 10.1371/journal.pone.0300000 --out ./paper.pdf
 | PDF 上限 | `PAPER_FETCH_MAX_PDF_MB` | 120 | 超限丢弃返 `size_limit_exceeded` |
 | 总时间预算 | `PAPER_FETCH_BUDGET_SEC` | 75 | 软预算，超了停止后续段正常返回 |
 | Elsevier API | `PAPER_FETCH_ELSEVIER_API_KEY` / `..._INST_TOKEN` | 无 | Elsevier 官方接口（免费申请），授权与出口 IP 绑定 |
-| Sci-Hub 开关 | `PAPER_FETCH_SCIHUB_ENABLED` / `PAPER_FETCH_SCIHUB_BASE_URLS` | 关 | 见下方「合规边界」：适配器**不包含在本仓库**，开关只是预留插槽 |
+| Sci-Hub 开关 | `PAPER_FETCH_SCIHUB_ENABLED` / `PAPER_FETCH_SCIHUB_BASE_URLS` | 关 | 见下方「合规边界」：默认关，开启即部署方自担合规责任 |
 
 ```python
 from paper_fetch import FetchConfig, download_pdf
@@ -151,8 +151,7 @@ result = await download_pdf(doi, None, None, title=t, config=cfg)
 ③ 出版商模板/落地页元数据/Unpaywall/Crossref → ④ Europe PMC（含 NIH 作者手稿）→
 ⑤ 无头浏览器/Tavily 网页发现 → ⑥ 预印本兜底（候选自带 URL ⑥a；显式给了预印本
 DOI 用原始 DOI 模板直下；只给正式版 DOI 则按标题发现预印本）→ ⑦ 机构图书馆代理
-（默认关）→ ⑧ Sci-Hub 插件段（**适配器不在本仓库**；开关 + 适配器在场双条件才生效，
-默认关）。付费墙终态返回 `auth_required=True` + `landing_url`，交给用户走机构订阅
+（默认关）→ ⑧ Sci-Hub（默认关，开启才生效）。付费墙终态返回 `auth_required=True` + `landing_url`，交给用户走机构订阅
 或手动下载。
 
 ## 身份核验与顶包防护
@@ -173,10 +172,9 @@ DOI 用原始 DOI 模板直下；只给正式版 DOI 则按标题发现预印本
 
 本工具只用于下载**开放获取**内容或**你有权访问**的内容（机构订阅、作者自存档等）。
 
-Sci-Hub 等合规敏感适配器**不包含在本仓库**：主链只保留默认关闭的开关插槽，需要该
-能力的部署方自行获取适配器并自担合规与法律责任，与本项目作者无关。适配器缺席时
-即使开关打开，该段也会静默跳过（加载协议见 `src/paper_fetch/extras.py`：
-把模块放回包内，或设 `PAPER_FETCH_EXTRA_ADAPTERS` 指向私有附加件目录/文件）。
+Sci-Hub 适配器**默认关闭**（`PAPER_FETCH_SCIHUB_ENABLED=1` 才启用）：开启表示部署方
+自行承担合规与法律责任，与本项目作者无关。第三方附加适配器可经
+`PAPER_FETCH_EXTRA_ADAPTERS` 指向目录/文件注入（协议见 `src/paper_fetch/extras.py`）。
 无头浏览器仅执行页面正常 JS 挑战，不破解验证码（遇到图形验证码自然失败）。
 
 ## 与 PaperPilot 的关系 · 双仓维护契约

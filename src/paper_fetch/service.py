@@ -18,7 +18,7 @@
     预印本/免费源段被 429/403 挡下时同任务内自动换出口 IP 重试（多 IP 轮换，2026-08-23 定稿）。
   ⑦ library proxy：预印本也不可得时用机构账号兜底。**默认停用**（2026-08-23 定稿：
     library_proxy_enabled 默认 False + 无凭据即跳过，防慢通道空转；用户可在设置里手动开）。
-  ⑧ Sci-Hub：可选插件段——适配器不随主仓分发（合规剥离，见 README「合规边界」），
+  ⑧ Sci-Hub：默认关（见 README「合规边界」），
      开关（FetchConfig.scihub_enabled，默认关）+ 适配器在场双条件才生效
 
 返回 schema：
@@ -42,7 +42,7 @@
 
 设计原则：
 - 每个 adapter 一个文件，纯函数签名，无状态共享（解耦）
-- Sci-Hub 段是可选插件：适配器已拆出主仓（2026-08-27 合规剥离），存在才挂、不存在
+- Sci-Hub 段默认关：适配器随仓分发（2026-08-27 Lily 拍板公开含之），存在才挂、不存在
   整段跳过——开关默认关，且没装适配器时开了也走空（见 extras.py 加载器）
 - 每段成功后立即 size 校验，超限丢弃返 size_limit_exceeded（T-08-08）
 - pdf_bytes 不进 LLM tool_result（由 paper_search_agent 转 cache，T-08-13）
@@ -98,7 +98,7 @@ from .proxy import async_client_for
 
 logger = logging.getLogger(__name__)
 
-# ⑧ Sci-Hub 可选插件入口（2026-08-27 合规剥离）：适配器不随主仓分发——部署方把它放回
+# ⑧ Sci-Hub 入口：适配器随仓分发、默认关——第三方附加件也可经
 # src/paper_fetch/ 或设 PAPER_FETCH_EXTRA_ADAPTERS 指向私有附加仓，加载器才返回入口；
 # 否则为 None，该段即使开关开着也整段跳过。测试/宿主可直接对
 # paper_fetch.service.fetch_via_scihub 赋值（或 patch）注入替身。
@@ -826,7 +826,7 @@ async def _download_pdf_chain(
                 )
         logger.debug("download_pdf: 机构链路后的 web_pdf_discovery 也未命中")
 
-    # ⑦ scihub：可选插件段（适配器不随主仓分发，默认关）。双条件生效：开关开 + 适配器在场；
+    # ⑦ scihub：默认关。双条件生效：开关开 + 适配器在场；
     # 开关开了但适配器缺席（未装/加载失败）时只打一行提示并跳过——不报错、不 tried、不空转。
     # 故意放在所有合法通道（含图书馆代理）之后、known_paywalled 短路之外——付费墙论文
     # 正是它的用武之地，只需 DOI。
@@ -837,7 +837,7 @@ async def _download_pdf_chain(
     if cfg.scihub_enabled and doi_effective:
         if fetch_via_scihub is None:
             logger.info(
-                "download_pdf: scihub 开关已开但适配器未安装（不随主仓分发，装法见 README"
+                "download_pdf: scihub 开关已开但适配器未安装（装法见 README"
                 "「合规边界」节），跳过该段"
             )
         else:

@@ -94,7 +94,7 @@ result = await download_pdf(
 
 - `auth_required` 是确定性失败：换 DOI/标题重试无意义，让用户走机构通道或手动下载。
 - 网络瞬断可整链重试一次；连续两次失败就停，报告 `tried_sources` 给用户。
-- Sci-Hub 段**不包含在本仓库**（合规敏感，需另行获取，默认关）；适配器缺席时该段
+- Sci-Hub 段默认关闭（`PAPER_FETCH_SCIHUB_ENABLED=1` 才启用，部署方自担合规责任）；未启用时该段
   自动跳过，用户没明确要求别管它（合规责任在部署方）。
 
 ## 配置

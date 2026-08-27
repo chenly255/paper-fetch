@@ -1,7 +1,9 @@
-"""可选适配器（extras.py）测试：合规敏感段拆出主仓后的插槽语义。
+"""可选适配器（extras.py）测试：主仓自带 + 第三方附加件注入的插槽语义。
 
-- 未安装适配器：load_optional_adapter 返 None；主链 scihub_enabled=True 也整段跳过
-  （不 emit、不 tried、不炸）——「开了也走空」的拆分承诺。
+- scihub 适配器随主仓分发（2026-08-27 Lily 拍板公开含之，默认关）：
+  service 模块级插槽直接解析到自带实现。
+- 未安装的模块名：load_optional_adapter 返 None；主链 scihub 段「开了也走空」
+  （不 emit、不 tried、不炸）。
 - PAPER_FETCH_EXTRA_ADAPTERS 指向文件/目录：动态加载成功，adapter 内相对 import
   （from .config import ...）照常工作。
 - 路径不存在 / 语法坏 / 缺目标函数：只打日志返 None，不打死主链。
@@ -35,26 +37,28 @@ def _clean_dynamic_module(monkeypatch):
     """动态加载会注册 paper_fetch.scihub_adapter 进 sys.modules，测试间必须清掉，
     否则第一步 import 命中残留、后续「未安装」用例误红。"""
     monkeypatch.delenv("PAPER_FETCH_EXTRA_ADAPTERS", raising=False)
-    sys.modules.pop("paper_fetch.scihub_adapter", None)
+    for name in ("paper_fetch.scihub_adapter", "paper_fetch.fake_adapter"):
+        sys.modules.pop(name, None)
     yield
-    sys.modules.pop("paper_fetch.scihub_adapter", None)
+    for name in ("paper_fetch.scihub_adapter", "paper_fetch.fake_adapter"):
+        sys.modules.pop(name, None)
 
 
 # ---------- 加载器单元 ----------
 
 
 def test_load_returns_none_when_adapter_absent():
-    """主包无该模块 + env 未设 → None（主仓拆分后的默认形态）。"""
+    """主包无此模块名 + env 未设 → None（第三方附加件缺位的默认形态）。"""
     from paper_fetch.extras import load_optional_adapter
 
-    assert load_optional_adapter("scihub_adapter", "fetch_via_scihub") is None
+    assert load_optional_adapter("no_such_adapter", "fetch_via_scihub") is None
 
 
-def test_service_slot_is_none_in_pristine_env():
-    """service 模块级插槽在干净环境下应为 None（适配器不随主仓分发）。"""
+def test_service_slot_resolves_bundled_adapter():
+    """scihub 适配器随主仓分发：service 模块级插槽应解析到自带实现（默认关）。"""
     from paper_fetch import service
 
-    assert service.fetch_via_scihub is None
+    assert service.fetch_via_scihub is not None
 
 
 @pytest.mark.asyncio
@@ -62,7 +66,7 @@ async def test_load_from_env_file(tmp_path):
     """env 指向具体文件：加载成功、可调用、相对 import 工作。"""
     from paper_fetch.extras import load_optional_adapter
 
-    f = tmp_path / "scihub_adapter.py"
+    f = tmp_path / "fake_adapter.py"
     f.write_text(_FAKE_ADAPTER, encoding="utf-8")
 
     import os
@@ -70,11 +74,11 @@ async def test_load_from_env_file(tmp_path):
     old = os.environ.get("PAPER_FETCH_EXTRA_ADAPTERS")
     os.environ["PAPER_FETCH_EXTRA_ADAPTERS"] = str(f)
     try:
-        entry = load_optional_adapter("scihub_adapter", "fetch_via_scihub")
+        entry = load_optional_adapter("fake_adapter", "fetch_via_scihub")
         assert entry is not None
         assert await entry("10.1/x") == b"%PDF-from-extra-adapter"
-        # 相对 import 在动态加载下照常解析（模块注册名 paper_fetch.scihub_adapter）
-        mod = sys.modules["paper_fetch.scihub_adapter"]
+        # 相对 import 在动态加载下照常解析（模块注册名 paper_fetch.fake_adapter）
+        mod = sys.modules["paper_fetch.fake_adapter"]
         assert mod._config_visible() is True
     finally:
         del os.environ["PAPER_FETCH_EXTRA_ADAPTERS"]
@@ -89,10 +93,10 @@ async def test_load_from_env_dir(tmp_path, monkeypatch):
 
     d = tmp_path / "adapters"
     d.mkdir()
-    (d / "scihub_adapter.py").write_text(_FAKE_ADAPTER, encoding="utf-8")
+    (d / "fake_adapter.py").write_text(_FAKE_ADAPTER, encoding="utf-8")
     monkeypatch.setenv("PAPER_FETCH_EXTRA_ADAPTERS", str(d))
 
-    entry = load_optional_adapter("scihub_adapter", "fetch_via_scihub")
+    entry = load_optional_adapter("fake_adapter", "fetch_via_scihub")
     assert entry is not None
     assert await entry(None) == b"%PDF-from-extra-adapter"
 
@@ -102,28 +106,28 @@ def test_load_missing_path_returns_none(tmp_path, monkeypatch):
     from paper_fetch.extras import load_optional_adapter
 
     monkeypatch.setenv("PAPER_FETCH_EXTRA_ADAPTERS", str(tmp_path / "nope"))
-    assert load_optional_adapter("scihub_adapter", "fetch_via_scihub") is None
+    assert load_optional_adapter("fake_adapter", "fetch_via_scihub") is None
 
 
 def test_load_broken_file_returns_none(tmp_path, monkeypatch):
     """语法坏的文件：返 None 不抛。"""
     from paper_fetch.extras import load_optional_adapter
 
-    f = tmp_path / "scihub_adapter.py"
+    f = tmp_path / "fake_adapter.py"
     f.write_text("def (broken syntax!!", encoding="utf-8")
     monkeypatch.setenv("PAPER_FETCH_EXTRA_ADAPTERS", str(f))
-    assert load_optional_adapter("scihub_adapter", "fetch_via_scihub") is None
-    assert "paper_fetch.scihub_adapter" not in sys.modules
+    assert load_optional_adapter("fake_adapter", "fetch_via_scihub") is None
+    assert "paper_fetch.fake_adapter" not in sys.modules
 
 
 def test_load_wrong_attr_returns_none(tmp_path, monkeypatch):
     """文件合法但没有目标函数：视为未安装返 None。"""
     from paper_fetch.extras import load_optional_adapter
 
-    f = tmp_path / "scihub_adapter.py"
+    f = tmp_path / "fake_adapter.py"
     f.write_text("X = 1\n", encoding="utf-8")
     monkeypatch.setenv("PAPER_FETCH_EXTRA_ADAPTERS", str(f))
-    assert load_optional_adapter("scihub_adapter", "fetch_via_scihub") is None
+    assert load_optional_adapter("fake_adapter", "fetch_via_scihub") is None
 
 
 # ---------- 主链集成：未装适配器时该段跳过 ----------
@@ -139,7 +143,7 @@ async def test_scihub_stage_skipped_when_adapter_absent(monkeypatch):
     monkeypatch.setattr(get_config(), "scihub_enabled", True)
     # 预算清零也无妨：scihub 段豁免预算，跳过只可能因适配器缺席
     monkeypatch.setattr(get_config(), "total_budget_sec", 0)
-    # 显式把插槽置 None（干净环境下本就是 None；防本机 env 影响，双保险）
+    # 显式把插槽置 None（模拟适配器缺席；防本机 env 影响，双保险）
     monkeypatch.setattr(svc, "fetch_via_scihub", None)
 
     stages: list[str] = []

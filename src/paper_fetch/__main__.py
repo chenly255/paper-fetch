@@ -17,7 +17,7 @@ from pathlib import Path
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="paper-fetch",
-        description="论文 PDF 下载链：正式版优先 → 预印本回落 → 付费墙信号（开放获取优先，Sci-Hub 插件不随本仓库分发）",
+        description="论文 PDF 下载链：正式版优先 → 预印本回落 → 付费墙信号（开放获取优先，Sci-Hub 默认关）",
     )
     parser.add_argument("--doi", default=None, help="论文 DOI（如 10.1371/journal.pone.0300000）")
     parser.add_argument("--url", default=None, help="论文页 URL（landing page 或 PDF 直链）")
