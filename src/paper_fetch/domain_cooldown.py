@@ -32,6 +32,8 @@ _BASE_BACKOFF_SEC = 30.0
 _MAX_BACKOFF_SEC = 15 * 60.0
 _JITTER_MIN = 0.8
 _JITTER_MAX = 1.2
+# 抖动用系统级随机源（random.uniform 的 Mersenne Twister 状态可被同进程预测）
+_RNG = random.SystemRandom()
 
 
 @dataclass
@@ -217,7 +219,7 @@ def _compute_delay(strikes: int, retry_after_sec: float | None) -> float:
         return min(max(retry_after_sec, 1.0), _MAX_BACKOFF_SEC)
     exp = _BASE_BACKOFF_SEC * (2 ** max(strikes - 1, 0))
     exp = min(exp, _MAX_BACKOFF_SEC)
-    return exp * random.uniform(_JITTER_MIN, _JITTER_MAX)
+    return exp * _RNG.uniform(_JITTER_MIN, _JITTER_MAX)
 
 
 def _parse_retry_after(value: str | None) -> float | None:

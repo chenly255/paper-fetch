@@ -31,6 +31,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import xml.etree.ElementTree as ET
+
+from defusedxml.ElementTree import fromstring as _defused_fromstring
 from urllib.parse import quote
 
 import httpx
@@ -349,7 +351,7 @@ def _probe_sync(doi: str, api_key: str, inst_token: str, user_doi: bool) -> dict
 def _extract_pdf_attachment_eids(xml_text: str) -> list[str]:
     """从 view=FULL XML 解析正文 PDF 的 EID，按优先级（正文优先、补充材料垫底）排序返回。"""
     try:
-        root = ET.fromstring(xml_text)  # nosec B314 — Elsevier 官方 API 的 HTTPS 响应，非用户可控输入
+        root = _defused_fromstring(xml_text)  # defusedxml：上游被劫持/注入实体时拒绝展开（XXE/十亿笑声）
     except ET.ParseError as exc:
         logger.warning("elsevier_api: XML 解析失败：%s", exc)
         return []

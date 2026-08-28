@@ -10,8 +10,16 @@ publisher_direct 覆盖有已知模板的出版商；这一层是**通用兜底*
 from __future__ import annotations
 
 import logging
+from urllib.parse import urljoin
 
-from .robust_fetch import FetchBudget, _looks_like_pdf
+from .robust_fetch import (
+    FetchBudget,
+    _browser_context_get,
+    _browser_exit_guard,
+    _ensure_public_async,
+    _looks_like_pdf,
+    _should_skip_cooled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +56,14 @@ async def fetch_via_browser_landing(
         logger.debug("browser_fetch: 浏览器会话不可用（%s）", exc)
         return None
 
+    # SSRF 入口校验（与 robust_fetch._browser_get 同款军规，R2-1）：landing_url 可能
+    # 来自用户可控 paper_url，内网/本机/云元数据地址不进浏览器；冷却中的域名也不
+    # 浪费浏览器预算。
+    if await _ensure_public_async(landing_url) is None:
+        return None
+    if _should_skip_cooled(landing_url):
+        return None
+
     budget.browser -= 1
     # 境外源走内嵌 mihomo（proxy_pool_service 统一判定；直连域不传代理）。
     from .proxy import proxy_for_url
@@ -55,6 +71,9 @@ async def fetch_via_browser_landing(
     try:
         async with BrowserSession(proxy_server=proxy_for_url(landing_url)) as session:
             page = session.page
+            # 出口重定向拦截（与 robust_fetch._browser_get 同款军规）：context 级路由
+            # 逐跳校验导航 URL，公网 landing 302 到内网时第二跳被 abort。
+            await session.context.route("**/*", _browser_exit_guard)
             try:
                 await page.goto(landing_url, wait_until="domcontentloaded")
                 await page.wait_for_timeout(_NAV_WAIT_MS)
@@ -72,20 +91,19 @@ async def fetch_via_browser_landing(
                 logger.debug("browser_fetch: %s 活 DOM 里没找到 PDF 链接", landing_url)
                 return None
 
-            # 相对链接补全
-            if pdf_url.startswith("/"):
-                from urllib.parse import urljoin
-                pdf_url = urljoin(landing_url, pdf_url)
+            # 相对链接补全（urljoin 同时覆盖 "/x" 与 "x" 两种相对形态）
+            pdf_url = urljoin(landing_url, pdf_url)
 
             logger.debug("browser_fetch: 活 DOM 读到 PDF 链接 %s", pdf_url)
-            try:
-                resp = await session.context.request.get(pdf_url, timeout=_REQ_TIMEOUT_MS)
-                body = await resp.body()
-                if _looks_like_pdf(body):
-                    logger.info("browser_fetch: 成功拿到 PDF（%d 字节）%s", len(body), pdf_url)
-                    return body
-            except Exception as exc:
-                logger.debug("browser_fetch: 下 PDF 失败（%s）", exc)
+            # 会话内拉 PDF：pdf_url 来自活 DOM（页面内容完全可控），不能交给
+            # Playwright 自动跟重定向——走 _browser_context_get 的逐跳 SSRF 校验
+            # + max_redirects=0（javascript:/内网地址在第一跳即被拒）。
+            body = await _browser_context_get(
+                session.context, pdf_url, timeout_ms=_REQ_TIMEOUT_MS
+            )
+            if _looks_like_pdf(body):
+                logger.info("browser_fetch: 成功拿到 PDF（%d 字节）%s", len(body or b""), pdf_url)
+                return body
             return None
     except Exception as exc:
         # REASON: 浏览器跨进程，任何启动/超时异常都降级 None。

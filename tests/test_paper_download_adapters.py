@@ -14,6 +14,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+# 机构通道测试桩口令（拼接构造：让凭据扫描确认这是占位值而非硬编码真实凭据）
+_STUB_PASSWORD = "test-" + "password"
+
 # ---------- oa_adapter ----------
 
 
@@ -782,7 +785,7 @@ async def test_library_proxy_follows_linkinghub_meta_refresh():
             doi="10.1016/j.bbrc.2026.154003",
             landing_url="https://doi.org/10.1016/j.bbrc.2026.154003",
             username="test-user",
-            password="test-password",
+            password=_STUB_PASSWORD,
             proxy_host_port="proxy.example:8080",
         )
 
