@@ -21,11 +21,12 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from .proxy import async_client_for
+from .proxy import async_client_for, proxy_for_url
 
 from .domain_cooldown import observe_http_status, should_skip_url
 from .oa_adapter import fetch_oa_pdf
-from .robust_fetch import _looks_like_pdf, is_free_site
+from .robust_fetch import _REDIRECT_STATUSES, _ensure_public_async, _looks_like_pdf, is_free_site
+from .url_safety import MAX_SAFE_REDIRECTS, pin_url_host
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,12 @@ _USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 _TIMEOUT_SEC = 15
+
+_REQ_HEADERS = {
+    "User-Agent": _USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 # HTML 里的付费墙签名（小写匹配；命中其一直接返 None 不浪费下游）
 _PAYWALL_MARKERS = (
@@ -110,28 +117,52 @@ async def _fetch_html(url: str) -> tuple[str | None, bytes | None, int | None, s
     final_url 是跳转后的最终网址（doi.org 会 302 到真出版商/预印本站）——给上层判免费站用
     （光看入参 doi.org 认不出 biorxiv，看 final_url 才认得出）。
 
+    SSRF 校验（与 robust_fetch._httpx_get 同款军规，R2-1）：paper_url 是用户可控输入，
+    follow_redirects=False + 手动逐跳跟随，每跳过 url_safety 公开地址校验；直连模式把
+    已校验 IP 固化进连接防 DNS rebinding。内网/本机/云元数据地址一律拒绝，按本段
+    失败降级（上层换下一来源），不再让服务端裸连任意地址。
+
     - URL 本身就是 PDF（content-type 含 pdf 或响应体 magic bytes 命中）→ (None, pdf_bytes, status, final_url)
     - 正常 HTML/XML 落地页 → (html, None, status, final_url)
     - 其余失败 → (None, None, status 或 None, final_url 或 None)
     """
+    current = url
     try:
-        async with async_client_for(url, follow_redirects=True, timeout=_TIMEOUT_SEC) as client:
-            resp = await client.get(
-                url,
-                headers={
-                    "User-Agent": _USER_AGENT,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9",
-                },
-            )
-            final_url = str(resp.url)
+        for _ in range(MAX_SAFE_REDIRECTS + 1):
+            ip = await _ensure_public_async(current)
+            if ip is None:
+                logger.warning("meta_adapter: 拒绝非公开地址 url=%s", current)
+                return None, None, None, None
+            # 冷却器在 SSRF 校验通过之后：校验失败的内网地址不进冷却表。
+            if should_skip_url(current):
+                return None, None, None, None
+            async with async_client_for(
+                current, follow_redirects=False, timeout=_TIMEOUT_SEC
+            ) as client:
+                if proxy_for_url(current):
+                    resp = await client.get(current, headers=_REQ_HEADERS)
+                else:
+                    connect_url, host, is_https = pin_url_host(current, ip)
+                    resp = await client.get(
+                        connect_url,
+                        headers={**_REQ_HEADERS, "Host": host},
+                        extensions={"sni_hostname": host} if is_https else None,
+                    )
+            if resp.status_code in _REDIRECT_STATUSES:
+                location = resp.headers.get("location")
+                if not location:
+                    return None, None, resp.status_code, current
+                # 重定向目标基于「逻辑 URL」解析（同 robust_fetch._httpx_get）
+                current = urljoin(current, location)
+                continue
+            final_url = current
 
             # 401/402/403 → 付费墙重定向，没救（但把 status + final_url 带回去当付费墙信号）
             if resp.status_code in (401, 402, 403):
-                logger.debug("meta_adapter: %s 返 HTTP %d（付费墙）", url, resp.status_code)
-                observe_http_status(final_url or url, resp.status_code, resp.headers)
+                logger.debug("meta_adapter: %s 返 HTTP %d（付费墙）", final_url, resp.status_code)
+                observe_http_status(final_url, resp.status_code, resp.headers)
                 return None, None, resp.status_code, final_url
-            if observe_http_status(final_url or url, resp.status_code, resp.headers):
+            if observe_http_status(final_url, resp.status_code, resp.headers):
                 return None, None, resp.status_code, final_url
 
             resp.raise_for_status()
@@ -142,13 +173,14 @@ async def _fetch_html(url: str) -> tuple[str | None, bytes | None, int | None, s
                 if _looks_like_pdf(resp.content):
                     return None, resp.content, resp.status_code, final_url
                 # 声称 pdf 但正文非 PDF（挑战页伪装）→ 当失败处理
-                logger.debug("meta_adapter: %s 声称 PDF 但正文非 %%PDF，丢弃", url)
+                logger.debug("meta_adapter: %s 声称 PDF 但正文非 %%PDF，丢弃", final_url)
                 return None, None, resp.status_code, final_url
             if "html" not in content_type and "xml" not in content_type:
-                logger.debug("meta_adapter: %s 返非 HTML（content-type=%s）", url, content_type)
+                logger.debug("meta_adapter: %s 返非 HTML（content-type=%s）", final_url, content_type)
                 return None, None, resp.status_code, final_url
 
             return resp.text, None, resp.status_code, final_url
+        return None, None, None, None
     except httpx.HTTPStatusError as exc:
         logger.debug("meta_adapter: %s HTTP 错误 %s", url, exc.response.status_code)
         return None, None, exc.response.status_code, None

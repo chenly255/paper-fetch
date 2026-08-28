@@ -345,8 +345,10 @@ def _response_location(headers) -> str | None:  # noqa: ANN001
     return None
 
 
-async def _browser_context_get(context, url: str) -> bytes | None:  # noqa: ANN001
+async def _browser_context_get(context, url: str, *, timeout_ms: int | None = None) -> bytes | None:  # noqa: ANN001
     """在已建立的浏览器会话内请求一次 PDF；传输失败交给上层继续轮询。
+
+    timeout_ms 缺省沿本级 12s；browser_fetch_adapter 等重载场景可放宽（如 60s）。
 
     Playwright 的 APIRequestContext.get 不走 context.route，默认会自动跟随
     重定向。公网 302 到 127.0.0.1 时第二跳不会被 _browser_exit_guard 拦住。
@@ -360,7 +362,9 @@ async def _browser_context_get(context, url: str) -> bytes | None:  # noqa: ANN0
             if _should_skip_cooled(current):
                 return None
             resp = await context.request.get(
-                current, timeout=_TIMEOUT_SEC * 1000, max_redirects=0,
+                current,
+                timeout=timeout_ms if timeout_ms is not None else _TIMEOUT_SEC * 1000,
+                max_redirects=0,
             )
             status = getattr(resp, "status", None)
             headers = getattr(resp, "headers", None)

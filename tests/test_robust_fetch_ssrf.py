@@ -381,3 +381,136 @@ async def test_browser_context_get_blocks_redirect_to_loopback(monkeypatch):
 
     assert result is None
     assert calls == [("https://8.8.8.8/a.pdf", 0)]  # 第二跳没发出
+
+
+# ============================================================
+# meta_adapter / browser_fetch_adapter 出口收口（审计修复：这两段
+# 此前未接 url_safety——用户可控 paper_url 可直连内网/云元数据）
+# ============================================================
+from paper_fetch import browser_fetch_adapter  # noqa: E402
+from paper_fetch import meta_adapter  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_meta_fetch_html_rejects_private_url_without_request():
+    """meta 段入口校验：内网 landing URL 在发请求前即被拒，httpx 客户端不创建。"""
+    with patch.object(
+        proxy_pool.httpx, "AsyncClient", side_effect=AssertionError("不应发请求")
+    ):
+        html, pdf, status, final = await meta_adapter._fetch_html(
+            "http://169.254.169.254/latest/meta-data/"
+        )
+    assert (html, pdf, status, final) == (None, None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_meta_fetch_html_validates_each_redirect_hop():
+    """meta 段重定向逐跳校验：公网 landing 302 到环回，第二跳不发请求。"""
+
+    class _Resp:
+        def __init__(self, status_code, location=None):
+            self.status_code = status_code
+            self.headers = {"location": location} if location else {}
+            self.content = b""
+            self.text = ""
+
+        def raise_for_status(self):
+            return None
+
+    class _Client:
+        calls: list[str] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, headers=None, extensions=None):
+            _Client.calls.append(url)
+            return _Resp(302, location="http://127.0.0.1:8000/secret")
+
+    with patch.object(proxy_pool.httpx, "AsyncClient", lambda **kw: _Client()):
+        html, pdf, status, final = await meta_adapter._fetch_html("https://8.8.8.8/a")
+
+    assert (html, pdf) == (None, None)
+    assert _Client.calls == ["https://8.8.8.8/a"]  # 内网第二跳没发出
+
+
+@pytest.mark.asyncio
+async def test_browser_fetch_adapter_rejects_private_landing_without_browser():
+    """browser 兜底段入口校验：内网 landing 不启动浏览器，且不消耗浏览器预算。"""
+    budget = robust_fetch.FetchBudget(browser=1)
+    with patch(
+        "paper_fetch.browser_session.BrowserSession"
+    ) as fake_session_cls:
+        result = await browser_fetch_adapter.fetch_via_browser_landing(
+            "http://192.168.1.10/landing", budget=budget
+        )
+    assert result is None
+    fake_session_cls.assert_not_called()
+    assert budget.browser == 1  # 入口拒绝不扣预算
+
+
+@pytest.mark.asyncio
+async def test_browser_fetch_adapter_dom_pdf_url_to_internal_blocked(monkeypatch):
+    """活 DOM 读出的 PDF 链接完全可控：指向云元数据/内网时必须被逐跳校验拦下。"""
+
+    async def fake_resolve(url):
+        if "169.254.169.254" in url:
+            raise url_safety.UnsafeUrlError("link-local")
+        return (url, _PINNED_IP)
+
+    monkeypatch.setattr(robust_fetch, "resolve_public_url", fake_resolve)
+
+    api_calls: list[str] = []
+
+    class _FakeAPIRequest:
+        async def get(self, url, timeout=None, max_redirects=None):
+            api_calls.append(url)
+
+            class _R:
+                async def body(self):
+                    return b"%PDF-1.7 leaked"
+
+            return _R()
+
+    class _FakeContext:
+        def __init__(self):
+            self.request = _FakeAPIRequest()
+            self.handlers: list = []
+
+        async def route(self, pattern, handler):
+            self.handlers.append(handler)
+
+    class _FakePage:
+        async def goto(self, url, wait_until=None):
+            return None
+
+        async def wait_for_timeout(self, ms):
+            return None
+
+        async def evaluate(self, script):
+            return "http://169.254.169.254/latest/meta-data/iam/"
+
+    class _FakeSession:
+        def __init__(self):
+            self.context = _FakeContext()
+            self.page = _FakePage()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    with patch(
+        "paper_fetch.browser_session.BrowserSession",
+        lambda **kwargs: _FakeSession(),
+    ):
+        result = await browser_fetch_adapter.fetch_via_browser_landing(
+            "https://example.com/landing", budget=robust_fetch.FetchBudget(browser=1)
+        )
+
+    assert result is None
+    assert api_calls == []  # 内网 PDF 链接一次请求都没发出
